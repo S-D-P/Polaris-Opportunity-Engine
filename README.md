@@ -68,7 +68,7 @@ intentionally excluded from the user-facing product; see `docs/personalization.m
 ```bash
 cp .env.example .env       # fill in your values
 npm install
-npx prisma migrate dev     # run migrations
+npx prisma db push         # sync the schema to your database
 npm run db:seed            # optional: load seed/demo data
 npm run dev                # start dev server at http://localhost:3000
 ```
