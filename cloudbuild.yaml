@@ -1,0 +1,69 @@
+# Builds the Polaris container remotely via Cloud Build (no local Docker) and deploys it to
+# Cloud Run. Run with:
+#   gcloud builds submit --config cloudbuild.yaml
+# Requires (docs/deployment.md): Artifact Registry repo `polaris` already created in
+# ${_REGION}, and the Cloud Build service account granted Cloud Run Admin + Service Account
+# User + Cloud SQL Client roles.
+#
+# KNOWN ISSUE (found 2026-09-09, not yet fixed): step 2 (the gcloud SDK step, used for
+# `gcloud run deploy`) can fail to pull `gcr.io/google-cloud-sdk` with "Permission
+# artifactregistry.repositories.downloadArtifacts denied on projects/google-cloud-sdk/...".
+# Steps 1 (docker build/push) succeed regardless — only the deploy step is affected. Until
+# resolved, deploy the already-pushed image directly via a Cloud Run v2 `services.patch`
+# REST call (GET the current service, change only `template.containers[0].image`, PATCH
+# back with `updateMask=template`) rather than re-running this file's step 2.
+
+steps:
+  - name: "gcr.io/cloud-builders/docker"
+    args:
+      - "build"
+      - "-t"
+      - "${_REGION}-docker.pkg.dev/${PROJECT_ID}/polaris/app:${SHORT_SHA}"
+      - "-t"
+      - "${_REGION}-docker.pkg.dev/${PROJECT_ID}/polaris/app:latest"
+      - "."
+
+  - name: "gcr.io/cloud-builders/docker"
+    args:
+      - "push"
+      - "${_REGION}-docker.pkg.dev/${PROJECT_ID}/polaris/app"
+      - "--all-tags"
+
+  - name: "gcr.io/google-cloud-sdk"
+    entrypoint: gcloud
+    args:
+      - "run"
+      - "deploy"
+      - "polaris"
+      - "--image=${_REGION}-docker.pkg.dev/${PROJECT_ID}/polaris/app:${SHORT_SHA}"
+      - "--region=${_REGION}"
+      - "--platform=managed"
+      - "--allow-unauthenticated"
+      - "--min-instances=0"
+      - "--max-instances=3"
+      - "--memory=1Gi"
+      - "--cpu=1"
+      - "--concurrency=40"
+      - "--timeout=60"
+      # AUTH_TRUST_HOST: Auth.js v5 rejects requests by Host header unless explicitly told to
+      # trust the proxy in front of it — required for any reverse-proxied deployment (Cloud
+      # Run included), discovered via a live deploy that otherwise 500'd on every auth route.
+      #
+      # --set-env-vars and --set-secrets each REPLACE their entire respective list (not merge)
+      # on every `gcloud run deploy` — so both must always list everything the live service
+      # needs, not just what this particular change touches. A deploy that dropped DATABASE_URL/
+      # AUTH_SECRET here would silently break the running service (found and fixed before ever
+      # shipping this way — verified live against the actual deployed service's env list first).
+      - "--set-env-vars=GOOGLE_CLOUD_PROJECT=${PROJECT_ID},GOOGLE_CLOUD_LOCATION=${_REGION},AUTH_TRUST_HOST=true,NEXTAUTH_URL=${_SERVICE_URL}"
+      - "--set-secrets=DATABASE_URL=polaris-database-url:latest,AUTH_SECRET=polaris-auth-secret:latest,INTERNAL_SCHEDULER_SECRET=polaris-scheduler-secret:latest"
+
+images:
+  - "${_REGION}-docker.pkg.dev/${PROJECT_ID}/polaris/app:${SHORT_SHA}"
+  - "${_REGION}-docker.pkg.dev/${PROJECT_ID}/polaris/app:latest"
+
+substitutions:
+  _REGION: us-central1
+  _SERVICE_URL: https://polaris-ka4pyersra-uc.a.run.app
+
+options:
+  logging: CLOUD_LOGGING_ONLY

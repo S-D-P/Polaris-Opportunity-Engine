@@ -1,0 +1,507 @@
+// Polaris — database schema.
+// Cloud SQL for PostgreSQL (migrated from the original SQLite MVP — docs/data-architecture.md).
+// Field types were kept Postgres-compatible from the start (JSON stored as String, arrays as
+// JSON-encoded strings), which is exactly why this swap was a `datasource provider` change,
+// not a schema rewrite — the one genuinely SQLite-specific code path was full-text search
+// (lib/search/fts.ts, SQLite FTS5), rewritten separately for Postgres native full-text search.
+
+generator client {
+  provider = "prisma-client-js"
+  // "native" alone matched local dev (Windows) and the Docker build stage but not the Cloud
+  // Run runtime specifically — a real deploy-time failure (PrismaClientInitializationError:
+  // engine generated for debian-openssl-1.1.x, runtime needed debian-openssl-3.0.x), not a
+  // guess. Explicitly generating the runtime's actual target fixes it regardless of what
+  // "native" resolves to on whatever machine `prisma generate` runs on.
+  binaryTargets = ["native", "debian-openssl-3.0.x"]
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ---------------------------------------------------------------------------
+// Auth / users
+// ---------------------------------------------------------------------------
+
+enum Role {
+  USER
+  ADMIN
+}
+
+model User {
+  id            String   @id @default(cuid())
+  email         String   @unique
+  passwordHash  String
+  name          String?
+  role          Role     @default(USER)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  profile             Profile?
+  trackedOpportunities TrackedOpportunity[]
+  searchQueries        SearchQueryLog[]
+  reviewedOpportunities Opportunity[] @relation("ReviewedBy")
+  reviewedComplianceRecords SourceComplianceRecord[] @relation("ComplianceReviewedBy")
+}
+
+// ---------------------------------------------------------------------------
+// Profile — progressive onboarding target. Every field is optional so partial
+// profiles (mid-onboarding) are always valid rows, never a half-written hack.
+// ---------------------------------------------------------------------------
+
+enum Stage {
+  SCHOOL_STUDENT
+  UNDERGRADUATE
+  GRADUATE
+  RECENT_GRADUATE
+  EARLY_CAREER
+  MID_CAREER
+  EXPERIENCED
+}
+
+model Profile {
+  id     String @id @default(cuid())
+  userId String @unique
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  onboardingStep      Int      @default(0)
+  onboardingComplete  Boolean  @default(false)
+
+  // Basics
+  name         String?
+  country      String?
+  ageRange     String?  // e.g. "18-24"
+  stage        Stage?
+
+  // Education
+  school           String?
+  degree           String?
+  fieldOfStudy     String?
+  graduationYear   Int?
+  academicInterests String? // JSON string[]
+
+  // Professional
+  currentRole      String?
+  industry         String?
+  yearsExperience  Int?
+  skills           String? // JSON string[] — human capabilities (Leadership, Research, Data Analysis)
+  technologies     String? // JSON string[] — tools/languages/platforms (Python, React, AWS). Kept
+                            // distinct from `skills` since they're different signals for matching
+                            // (docs/personalization.md) even though both are free-text-tag arrays.
+
+  // Gender — self-identified, optional, used only to evaluate opportunities whose eligibility
+  // is explicitly gender-restricted (Opportunity.genderEligibility). Free text rather than a
+  // fixed enum so it isn't prescriptive; the UI offers common options plus "self-describe".
+  gender           String?
+
+  // Interests (taxonomy chips + free "other")
+  interests        String? // JSON string[]
+
+  // Aspirations
+  aspirationsRaw       String? // free-text, source of truth
+  aspirationsSummary   String? // AI-normalized one-sentence goal
+  goalTags             String? // JSON string[], AI-extracted
+
+  // Preferences
+  remoteOk         Boolean  @default(true)
+  hybridOk         Boolean  @default(true)
+  inPersonOk       Boolean  @default(true)
+  preferredCountries String? // JSON string[]
+  paidOnly         Boolean  @default(false)
+  timeCommitment   String?  // e.g. "part-time", "full-time", "few-hours-week"
+  preferredTypes   String?  // JSON string[] of OpportunityType values
+
+  citizenship      String? // used for eligibility gating
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+// ---------------------------------------------------------------------------
+// Opportunities
+// ---------------------------------------------------------------------------
+
+enum OpportunityType {
+  SCHOLARSHIP
+  FELLOWSHIP
+  INTERNSHIP
+  JOB
+  HACKATHON
+  COMPETITION
+  OLYMPIAD
+  CAMP
+  CONFERENCE
+  MENTORSHIP
+  LEADERSHIP_PROGRAM
+  RESEARCH_PROGRAM
+  EXECUTIVE_EDUCATION
+  COURSE
+  GRANT
+  AWARD
+  VOLUNTEERING
+  SPEAKING
+  JUDGING
+  ADVISORY
+  BOARD
+}
+
+enum OpportunityStatus {
+  OPEN
+  CLOSING_SOON
+  CLOSED
+  DRAFT
+  // Auto-derived when `deadline` has passed and nothing (source or admin) ever explicitly
+  // set CLOSED — distinct from CLOSED specifically so the UI/data can tell "we inferred
+  // this is over because the date passed" apart from "the source/an admin stated this is
+  // closed" (docs/ingestion-roadmap.md Part 9). Excluded from eligibility exactly like
+  // CLOSED (lib/matching/eligibility.ts).
+  EXPIRED
+}
+
+// Geographic eligibility scope (docs/geographic-model.md). Long-term-architecture note: this
+// is deliberately a coarse, extensible classification, not a hard-coded India-only model —
+// GLOBAL/REMOTE_GLOBAL/REGION_SPECIFIC/COUNTRY_SPECIFIC apply to any future region, and
+// `Opportunity.geographicDetail` carries the specific region/country name as free text so
+// adding a new region (Asia, North America, ...) never requires a schema change.
+enum GeographicScope {
+  INDIA_ONLY // explicitly restricted to applicants located in / citizens of India
+  GLOBAL // explicitly open worldwide, no stated restriction
+  REGION_SPECIFIC // explicitly restricted to a named multi-country region (see geographicDetail)
+  COUNTRY_SPECIFIC // explicitly restricted to one specific country other than India (see geographicDetail)
+  REMOTE_GLOBAL // explicitly remote/online AND explicitly open to international applicants
+  LOCATION_UNKNOWN // the source did not state eligibility clearly enough to classify — never guessed
+}
+
+// Gender eligibility classification (docs/personalization.md). Distinguishes a hard
+// requirement from mere encouragement — only GENDER_REQUIRED is enforced as a hard
+// eligibility gate; the wording that produces this classification must be explicit
+// (never inferred from organization name, branding, or "encouraged to apply" phrasing).
+enum GenderEligibility {
+  GENDER_REQUIRED // eligibility is explicitly restricted to the gender(s) in genderRestrictedTo
+  GENDER_PREFERRED // explicitly encourages/prioritizes a gender but doesn't exclude others
+  NO_GENDER_RESTRICTION // explicitly open to all genders
+  NOT_STATED // the source doesn't address gender eligibility — never guessed
+}
+
+// Deadline lifecycle classification (docs/personalization.md). A null `deadline` is
+// ambiguous on its own — this makes explicit *why* there's no date, instead of collapsing
+// "the source said rolling admissions" and "the source just didn't mention a deadline" into
+// the same unknown state. Only FIXED is derived deterministically (a parsed date exists);
+// ROLLING/ONGOING require the source to have said so explicitly (extracted by Gemini,
+// lib/ai/extraction.ts) — absence of a date is NOT_STATED, never guessed as ROLLING.
+enum DeadlineType {
+  FIXED       // a specific deadline date is known (`deadline` is set)
+  ROLLING     // source explicitly states rolling/continuous review, no fixed cutoff
+  ONGOING     // source explicitly states no application deadline / always open
+  NOT_STATED  // the source didn't address timing at all — never guessed
+}
+
+enum VerificationStatus {
+  VERIFIED       // confirmed against the authoritative source by a human/admin
+  AI_EXTRACTED   // structured by the AI pipeline, not yet human-confirmed
+  NEEDS_REVIEW   // extraction incomplete, low-confidence, or validation failed partially
+}
+
+enum SourceType {
+  RSS
+  JSON_API
+  STATIC_PAGE
+  MANUAL
+}
+
+model Opportunity {
+  id                String   @id @default(cuid())
+
+  title             String
+  organization      String
+  description       String
+  shortDescription  String
+
+  opportunityType   OpportunityType
+  categories        String // JSON string[]
+  fields            String // JSON string[]
+  skills            String // JSON string[]
+  targetAudience    String // JSON string[] e.g. ["undergraduate","early-career"]
+
+  // Eligibility (structured; absence of a field = not a stated constraint)
+  eligibilitySummary       String?
+  minimumAge               Int?
+  maximumAge                Int?
+  educationRequirements    String? // JSON string[]
+  experienceRequirements   String? // JSON string[]
+  citizenshipRequirements  String? // JSON string[], ISO country codes or "any"
+
+  // Gender eligibility (docs/personalization.md). `genderRequirement` is the free-text source
+  // evidence (e.g. "Open to women and gender minorities") — kept as-is for display/provenance.
+  // `genderEligibility` is Polaris's structured classification of that text, and
+  // `genderRestrictedTo` is only populated when genderEligibility is GENDER_REQUIRED (the one
+  // tier the hard eligibility gate actually enforces — see lib/matching/eligibility.ts).
+  // GENDER_PREFERRED ("women encouraged to apply") is deliberately never a hard exclusion.
+  genderRequirement        String?
+  genderEligibility        GenderEligibility @default(NOT_STATED)
+  genderRestrictedTo       String? // JSON string[], e.g. ["woman"] or ["woman","non-binary"]
+
+  // Location
+  location    String?
+  countries   String  // JSON string[], [] = global/unspecified
+  remote      Boolean @default(false)
+  hybrid      Boolean @default(false)
+  inPerson    Boolean @default(false)
+
+  // Geographic eligibility scope (docs/geographic-model.md) — distinct from `location`
+  // (where the program physically happens) and `countries` (free-text ISO list). This is a
+  // coarse, source-evidenced classification of *who is eligible*, set only from what the
+  // source actually states — never inferred from the organization's own country (a US
+  // company's program is not automatically US-only; a "global" program is not automatically
+  // open to India). Defaults to LOCATION_UNKNOWN, which is the honest state for every
+  // pre-existing row until a re-fetch or a dedicated eligibility pass classifies it.
+  geographicScope  GeographicScope @default(LOCATION_UNKNOWN)
+  // Free-text qualifier when geographicScope is REGION_SPECIFIC/COUNTRY_SPECIFIC, e.g.
+  // "Southeast Asia" or "Kenya" — supports future geographic expansion (India → Asia → ...)
+  // without needing a schema change per new region.
+  geographicDetail String?
+
+  // Cost / funding
+  cost      String? // e.g. "Free", "$50 application fee"
+  isFree    Boolean @default(true)
+  funding   String? // e.g. "$10,000 stipend + travel"
+  benefits  String? // JSON string[]
+
+  // Dates
+  deadline    DateTime?
+  deadlineType DeadlineType @default(NOT_STATED)
+  startDate   DateTime?
+  endDate     DateTime?
+
+  // Links & provenance
+  applicationUrl String
+  sourceUrl      String
+  sourceName     String
+  sourceType     SourceType
+  sourceId       String?
+  source         Source?  @relation(fields: [sourceId], references: [id])
+
+  dateDiscovered DateTime @default(now())
+  dateUpdated    DateTime @updatedAt
+  lastCheckedAt  DateTime @default(now()) // bumped on every re-fetch attempt, success or not
+  verifiedAt     DateTime? // set only when a re-fetch *confirms* the listing is still live — distinct from lastCheckedAt (docs/ingestion-roadmap.md Part 11)
+
+  status              OpportunityStatus   @default(OPEN)
+  verificationStatus  VerificationStatus  @default(NEEDS_REVIEW)
+  isSeedData          Boolean             @default(false)
+
+  reviewedById String?
+  reviewedBy   User?   @relation("ReviewedBy", fields: [reviewedById], references: [id])
+  reviewedAt   DateTime?
+
+  // AI-derived
+  aiSummary               String?
+  aiTags                  String? // JSON string[]
+  aiExtractedRequirements String? // JSON object, raw AI extraction payload for admin review
+  embedding                String? // JSON number[], local hashing embedding (see lib/ai/embeddings.ts)
+
+  // Deduplication (docs/ingestion-roadmap.md Part 10). `duplicateOfId`/`duplicateConfidence`
+  // are only ever set for POSSIBLE_DUPLICATE candidates stored as their own row for human
+  // review — a HIGH_CONFIDENCE_DUPLICATE never creates a new row at all (the existing
+  // record is updated in place instead), so it never populates these fields.
+  fingerprint          String
+  duplicateOfId        String?
+  duplicateOf          Opportunity?  @relation("Duplicates", fields: [duplicateOfId], references: [id])
+  duplicates           Opportunity[] @relation("Duplicates")
+  duplicateConfidence  Float?  // 0-1, only set when duplicateOfId is set
+  duplicateReviewStatus String? // "needs_review" | "confirmed_duplicate" | "confirmed_distinct" — admin decision on a POSSIBLE_DUPLICATE candidate
+
+  trackedBy TrackedOpportunity[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([opportunityType])
+  @@index([status])
+  @@index([deadline])
+  @@index([verificationStatus])
+  @@index([fingerprint])
+  @@index([geographicScope])
+  @@index([organization])
+  @@index([geographicDetail])
+  @@index([deadlineType])
+}
+
+// FTS5 virtual table is created via raw SQL in a migration (Prisma can't model
+// virtual tables), see prisma/migrations/*_fts/migration.sql and lib/search.
+
+// ---------------------------------------------------------------------------
+// Source compliance — see docs/ingestion-roadmap.md Part 4 and docs/source-compliance.md.
+// A compliance record can exist independently of any Source row (compliance research
+// happens before a source is ever wired up for ingestion — see the 19 researched
+// candidates, most of which have no Source row yet). A Source's `complianceRecordId` is
+// nullable at the DB level for migration simplicity, but the ingestion gate
+// (lib/ingestion/compliance.ts) treats a missing record identically to
+// UNCLEAR_REQUIRES_REVIEW — fail closed, never fail open.
+// ---------------------------------------------------------------------------
+
+enum ComplianceStatus {
+  ALLOWED
+  ALLOWED_WITH_RESTRICTIONS
+  UNCLEAR_REQUIRES_REVIEW
+  NOT_ALLOWED
+}
+
+model SourceComplianceRecord {
+  id     String @id @default(cuid())
+
+  sourceName String // human label — independent of any Source row's own `name`
+  sourceUrl  String
+
+  robotsTxtStatus          String?   // "found" | "not_found" | "error"
+  robotsTxtCrawlPermission String?   // "allowed" | "disallowed" | "partial" | "unknown"
+  robotsTxtCheckedAt       DateTime?
+
+  tosReviewed Boolean @default(false)
+  tosUrl      String?
+  tosSummary  String? // what was actually found, with citations — never a guess
+
+  apiAvailable Boolean @default(false)
+  apiPreferred Boolean @default(false)
+  apiDocsUrl   String?
+
+  rssAvailable Boolean @default(false)
+  rssUrl       String?
+
+  sitemapAvailable Boolean @default(false)
+  sitemapUrl       String?
+
+  automatedAccessStatus ComplianceStatus
+  rateLimit             String? // e.g. "1000 req/hour", or "unspecified — default to conservative"
+  permittedAdapterType  String? // "official_api" | "rss" | "sitemap_static_html" | "manual" | "none"
+  complianceNotes       String  // free text, must cite what was checked
+
+  lastPolicyCheckAt DateTime
+  reviewRequired    Boolean   @default(false)
+  reviewedById      String?
+  reviewedBy        User?     @relation("ComplianceReviewedBy", fields: [reviewedById], references: [id])
+  reviewedAt        DateTime?
+
+  sources Source[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([automatedAccessStatus])
+}
+
+model Source {
+  id           String     @id @default(cuid())
+  name         String
+  organization String?    // publishing org, distinct from `name` (Polaris's own label for the source)
+  sourceType   SourceType
+  url          String
+  config       String?    // JSON, adapter-specific (e.g. field mapping hints)
+  isActive     Boolean    @default(true)
+  createdAt    DateTime   @default(now())
+  updatedAt    DateTime   @updatedAt
+
+  // Coverage — set at source-creation time, used for coverage-gap analysis
+  categoryCoverage    String? // JSON string[], e.g. ["AI/ML","Public Policy"]
+  geographicCoverage  String? // JSON string[], e.g. ["United States"] or ["global"]
+
+  // Quality/health (docs/ingestion-roadmap.md Part 12-13). reliabilityScore starts neutral
+  // and is only ever adjusted by real observed behavior — never hand-picked per source.
+  reliabilityScore Float @default(1.0)
+
+  // Denormalized snapshot of complianceRecord's own fields, for fast filtering without a
+  // join — source of truth stays the compliance record; this is a point-in-time copy taken
+  // when the source is linked to (or its record is updated), not a live-synced value. See
+  // lib/ingestion/compliance.ts's gate, which always reads the real relation, never this copy.
+  complianceStatus  ComplianceStatus?
+  lastPolicyCheckAt DateTime?
+
+  crawlFrequency String? // "daily" | "weekly" | "high-frequency" | "manual" — drives Cloud Scheduler cadence (Part 13)
+  rateLimit      String? // e.g. "1000 req/hour" — may refine the compliance record's own rateLimit for this specific integration
+
+  lastSuccessfulIngestionAt DateTime? // set by the pipeline only when a run SUCCEEDED
+  lastFailureAt             DateTime? // set by the pipeline only when a run FAILED (including compliance-gate blocks)
+
+  extractionMethod String? // "official_api" | "rss" | "sitemap_html" | "manual" — should never be more invasive than complianceRecord.permittedAdapterType allows
+
+  complianceRecordId String?
+  complianceRecord   SourceComplianceRecord? @relation(fields: [complianceRecordId], references: [id])
+
+  opportunities Opportunity[]
+  jobs          IngestionJob[]
+}
+
+enum JobStatus {
+  PENDING
+  RUNNING
+  SUCCEEDED
+  FAILED
+}
+
+model IngestionJob {
+  id           String    @id @default(cuid())
+  sourceId     String
+  source       Source    @relation(fields: [sourceId], references: [id], onDelete: Cascade)
+
+  status       JobStatus @default(PENDING)
+  startedAt    DateTime  @default(now())
+  finishedAt   DateTime?
+
+  itemsFound     Int @default(0)
+  itemsStored    Int @default(0)
+  itemsUpdated   Int @default(0)
+  itemsDuplicate Int @default(0)
+  itemsFailed    Int @default(0)
+  // Items deliberately excluded by the deterministic relevance pre-filter
+  // (lib/ingestion/relevance-filter.ts) — distinct from itemsFailed, since these aren't
+  // malformed/invalid items, they're correctly-parsed items that just aren't opportunities
+  // (e.g. an ordinary blog post from a source whose feed mixes news with real programs).
+  itemsFiltered  Int @default(0)
+
+  errors String? // JSON string[]
+}
+
+// ---------------------------------------------------------------------------
+// Tracker (save / track opportunities)
+// ---------------------------------------------------------------------------
+
+enum TrackStatus {
+  DISCOVERED
+  SAVED
+  INTERESTED
+  APPLIED
+  COMPLETED
+  NOT_RELEVANT
+}
+
+model TrackedOpportunity {
+  id             String      @id @default(cuid())
+  userId         String
+  user           User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  opportunityId  String
+  opportunity    Opportunity @relation(fields: [opportunityId], references: [id], onDelete: Cascade)
+
+  status         TrackStatus @default(SAVED)
+  notes          String?
+  matchScoreSnapshot Int?    // score at time of save, for reference
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([userId, opportunityId])
+  @@index([userId, status])
+}
+
+// ---------------------------------------------------------------------------
+// Search analytics (powers "popular" filter, future tuning)
+// ---------------------------------------------------------------------------
+
+model SearchQueryLog {
+  id        String   @id @default(cuid())
+  userId    String?
+  user      User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
+  query     String
+  resultCount Int
+  createdAt DateTime @default(now())
+}

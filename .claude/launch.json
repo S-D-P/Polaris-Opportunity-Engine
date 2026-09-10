@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "polaris-dev",
+      "runtimeExecutable": "cmd.exe",
+      "runtimeArgs": ["/c", "C:\\Users\\siddh\\OneDrive\\Desktop\\Claude\\.claude\\dev.cmd"],
+      "port": 3000
+    }
+  ]
+}

@@ -1,0 +1,69 @@
+@import "tailwindcss";
+
+:root {
+  /* Daytime sea/sky */
+  --background: #eef5fb;
+  --surface: #ffffff;
+  --surface-muted: #e3edf6;
+  --foreground: #0f2942;
+  --foreground-muted: #4c6480;
+  --border: #cddcea;
+
+  --primary: #0d3b66;
+  --primary-foreground: #ffffff;
+  /* Star gold — used sparingly, as a highlight against the sea/sky tones, not a backdrop */
+  --accent: #d9a441;
+  --accent-foreground: #1c1a2e;
+
+  --success: #1f7a5c;
+  --warning: #b8721f;
+  --danger: #c0392b;
+
+  --font-display: var(--font-fraunces);
+  --font-sans: var(--font-inter);
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-surface: var(--surface);
+  --color-surface-muted: var(--surface-muted);
+  --color-foreground: var(--foreground);
+  --color-foreground-muted: var(--foreground-muted);
+  --color-border: var(--border);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-success: var(--success);
+  --color-warning: var(--warning);
+  --color-danger: var(--danger);
+  --font-display: var(--font-display);
+  --font-sans: var(--font-sans);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    /* Night sky — same story, after dark: deep sea-navy with a bright star accent */
+    --background: #071426;
+    --surface: #0e2038;
+    --surface-muted: #16304f;
+    --foreground: #eaf2fb;
+    --foreground-muted: #93a8c2;
+    --border: #23405f;
+
+    --primary: #bfe0ff;
+    --primary-foreground: #0b2036;
+    --accent: #f0b429;
+    --accent-foreground: #1c1a2e;
+  }
+}
+
+body {
+  background: var(--background);
+  color: var(--foreground);
+  font-family: var(--font-sans), ui-sans-serif, system-ui, sans-serif;
+}
+
+.font-display {
+  font-family: var(--font-display), ui-serif, Georgia, serif;
+}
