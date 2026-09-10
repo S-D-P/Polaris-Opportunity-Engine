@@ -43,7 +43,9 @@ Full detail: `docs/architecture.md`, `docs/data-architecture.md`.
 ## 2. Live deployment
 
 - URL: `https://polaris-ka4pyersra-uc.a.run.app`
-- Image (at handoff time): `us-central1-docker.pkg.dev/polaris-opportunity-engine/polaris/app:v7`
+- Image (at handoff time): `us-central1-docker.pkg.dev/polaris-opportunity-engine/polaris/app:v8`
+  (v8 adds one fix from a later final-audit pass — see `docs/CLAUDE_FINAL_SUBMISSION_AUDIT.md`:
+  the `sort` API parameter no longer silently accepts unimplemented `match`/`popular` values)
 - Deploy method: Cloud Build (`cloudbuild.yaml`) builds and pushes the image; the actual
   `gcloud run deploy` step is currently **broken** (see §9) so the working deploy path is a
   direct Cloud Run v2 REST `services.patch` call. **Read this before deploying**: GET the

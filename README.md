@@ -3,8 +3,10 @@
 > **Live deployment**: [https://polaris-ka4pyersra-uc.a.run.app](https://polaris-ka4pyersra-uc.a.run.app)
 
 Polaris discovers scholarships, fellowships, internships, hackathons, research programs, and
-jobs scattered across hundreds of websites and matches them to you — based on your education,
-citizenship, skills, experience, and goals. No endless form or manual search needed.
+other opportunities scattered across hundreds of websites and matches them to you — based on
+your education, citizenship, skills, experience, and goals. No endless form or manual search
+needed. (Polaris is opportunity discovery, not a jobs board — regular job listings are
+intentionally excluded from the user-facing product; see `docs/personalization.md`.)
 
 ---
 

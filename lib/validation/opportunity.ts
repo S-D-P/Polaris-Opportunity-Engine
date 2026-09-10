@@ -10,7 +10,13 @@ export const opportunityFilterSchema = z.object({
   isFree: z.coerce.boolean().optional(),
   country: z.string().trim().max(120).optional(),
   deadlineBefore: z.coerce.date().optional(),
-  sort: z.enum(["match", "deadline", "recent", "popular"]).default("recent"),
+  // Only "deadline" and "recent" are actually implemented (lib/search/index.ts) — "match" and
+  // "popular" were accepted here but silently fell back to "recent" behavior with no real
+  // sort applied, since no UI control ever sent them and no code path implemented either
+  // (no save-count/popularity signal exists to sort by; match-score sorting only exists in
+  // the personalized feed, a different endpoint). Narrowed to what's real rather than
+  // accepting-and-ignoring values that look supported but aren't (docs/scalability.md).
+  sort: z.enum(["deadline", "recent"]).default("recent"),
   page: z.coerce.number().int().min(1).default(1),
   pageSize: z.coerce.number().int().min(1).max(50).default(20),
 });

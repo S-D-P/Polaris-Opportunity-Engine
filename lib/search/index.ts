@@ -19,7 +19,7 @@ export interface SearchParams {
   keywordQuery?: string;
   semanticQuery?: string;
   filters?: SearchFilters;
-  sort?: "match" | "deadline" | "recent" | "popular";
+  sort?: "deadline" | "recent"; // only these two are actually implemented — see lib/validation/opportunity.ts
   page?: number;
   pageSize?: number;
 }
@@ -33,8 +33,8 @@ export interface RankedOpportunity {
  * Hybrid search: SQL filters narrow the candidate set (a hard constraint, never a ranking
  * signal that can be "talked around" by relevance), then Postgres full-text keyword rank and
  * embedding cosine similarity are blended for the final order when a query is present
- * (docs/architecture.md §6). With no query, results are sorted deterministically
- * (deadline/recent/popular).
+ * (docs/architecture.md §6). With no query, results are sorted deterministically by deadline
+ * or by discovery recency.
  */
 export async function searchOpportunities(
   params: SearchParams
