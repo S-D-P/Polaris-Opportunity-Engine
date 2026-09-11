@@ -2,6 +2,11 @@
 
 > **Live deployment**: [https://polaris-ka4pyersra-uc.a.run.app](https://polaris-ka4pyersra-uc.a.run.app)
 
+**Patchamomma 2026 submission resources:**
+[Medium article](https://medium.com/@siddhipandirkar/the-deadline-had-already-passed-again-29d476a7f3cf) ·
+[Submission document](https://docs.google.com/document/d/1Z3KutaRJNoqH6nhZ_0_pSOm1Ccr9ZkJz3uQgy7sg4NE/edit?tab=t.0) ·
+[Demo screen recording](https://drive.google.com/file/d/1PkKP1AmXiyhIkuipmVpU_E9Zx8gRqCxn/view?usp=sharing)
+
 ## The Problem
 
 Opportunities can change the trajectory of a person's education and career. But an opportunity can only create impact if the person who needs it knows that it exists.
